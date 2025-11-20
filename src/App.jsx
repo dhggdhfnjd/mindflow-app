@@ -54,7 +54,7 @@ const Badge = ({ children, variant = "default" }) => {
   );
 };
 
-const Button = ({ onClick, children, variant = "primary", className = "", disabled = false }) => {
+const Button = ({ onClick, children, variant = "primary", className = "", disabled = false, type = "button" }) => {
   const variants = {
     primary: "bg-green-500 hover:bg-green-600 text-black font-bold",
     secondary: "bg-gray-700 hover:bg-gray-600 text-white",
@@ -67,12 +67,89 @@ const Button = ({ onClick, children, variant = "primary", className = "", disabl
     <button 
       onClick={onClick} 
       disabled={disabled}
+      type={type}
       className={`px-4 py-2 rounded-full transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${variants[variant]} ${className}`}
     >
       {children}
     </button>
   );
 };
+
+// --- 幫你自動 fallback 的 Spotify 抓歌 + 特徵函式 ---
+// 優先：現在正在播放的歌 → 沒有就用 recently played 最後一首
+async function fetchTrackWithFeatures(token) {
+  // 1. 先試著抓 currently playing
+  let track = null;
+
+  const nowRes = await fetch("https://api.spotify.com/v1/me/player/currently-playing", {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  console.log('[CURRENTLY PLAYING] status =', nowRes.status);
+
+  if (nowRes.status === 401) {
+    throw new Error("TOKEN_EXPIRED");
+  }
+
+  if (nowRes.ok) {
+    const nowData = await nowRes.json();
+    console.log('[CURRENTLY PLAYING] data =', nowData);
+
+    if (nowData && nowData.item && nowData.item.type === 'track') {
+      track = nowData.item;
+    }
+  }
+
+  // 2. 如果現在沒有正在播放的 track，就改抓最近播放
+  if (!track) {
+    const recentRes = await fetch("https://api.spotify.com/v1/me/player/recently-played?limit=1", {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    console.log('[RECENTLY PLAYED] status =', recentRes.status);
+
+    if (!recentRes.ok) {
+      throw new Error("FAILED_RECENTLY_PLAYED");
+    }
+
+    const recentData = await recentRes.json();
+    console.log('[RECENTLY PLAYED] data =', recentData);
+
+    if (!recentData.items || recentData.items.length === 0) {
+      throw new Error("NO_TRACK_AVAILABLE");
+    }
+
+    const item = recentData.items[0];
+    if (!item.track || item.track.type !== 'track') {
+      throw new Error("NO_VALID_TRACK");
+    }
+
+    track = item.track;
+  }
+
+  const trackId = track.id;
+  console.log('[AUDIO FEATURES] trackId =', trackId);
+
+  // 3. 抓 audio-features
+  const featuresRes = await fetch(`https://api.spotify.com/v1/audio-features/${trackId}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+
+  console.log('[AUDIO FEATURES] status =', featuresRes.status);
+
+  if (!featuresRes.ok) {
+    throw new Error("FAILED_AUDIO_FEATURES");
+  }
+
+  const featuresData = await featuresRes.json();
+  console.log('[AUDIO FEATURES] data =', featuresData);
+
+  if (!featuresData || typeof featuresData.valence !== 'number' || typeof featuresData.energy !== 'number') {
+    throw new Error("INVALID_FEATURES");
+  }
+
+  return { track, features: featuresData };
+}
 
 // --- 主要應用程式元件 ---
 
@@ -93,7 +170,7 @@ export default function AcousticBiomarkerApp() {
   // AI 模型狀態
   const [userBaseline, setUserBaseline] = useState({ valence: 0.5, energy: 0.5 });
   const [sessionData, setSessionData] = useState([]); 
-  const [currentEmotionState, setCurrentEmotionState] = useState({ label: "Neutral", score: 0 });
+  const [currentEmotionState, setCurrentEmotionState] = useState({ label: "Neutral", score: 0, color: "text-gray-400" });
   
   // 日誌系統
   const [journalEntries, setJournalEntries] = useState([]);
@@ -131,81 +208,43 @@ export default function AcousticBiomarkerApp() {
     setSessionData([]);
   };
 
-  // --- 核心邏輯：獲取真實數據 ---
+  // --- 核心邏輯：獲取真實數據（用上面的 helper） ---
   const fetchSpotifyData = async () => {
     if (!token) return;
     setIsLoading(true);
 
     try {
-      const response = await fetch("https://api.spotify.com/v1/me/player/currently-playing", {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-
-      if (response.status === 401) {
-        // Token 過期
-        console.error("Token expired");
-        logout();
-        return;
-      }
-
-      if (response.status === 204 || response.status > 400) {
-        setIsLoading(false);
-        return; 
-      }
-
-      const data = await response.json();
-      if (!data || !data.item) {
-        setIsLoading(false);
-        return;
-      }
-
-      // 檢查是否為音樂軌道
-      if (data.item.type !== 'track') {
-         console.log("Not a track (podcast/ad), skipping features");
-         setIsLoading(false);
-         return;
-      }
-
-      const trackId = data.item.id;
-      
-
-      let features = { valence: 0.5, energy: 0.5, tempo: 120 };
-      try {
-        const featuresResponse = await fetch(`https://api.spotify.com/v1/audio-features/${trackId}`, {
-            headers: { Authorization: `Bearer ${token}` }
-        });
-        
-        if (featuresResponse.ok) {
-            const featuresData = await featuresResponse.json();
-            if (featuresData) {
-                features = featuresData;
-            }
-        }
-      } catch (e) {
-        console.warn("Failed to load audio features", e);
-      }
+      const { track, features } = await fetchTrackWithFeatures(token);
 
       const newSong = {
-        id: trackId,
-        name: data.item.name,
-        artist: data.item.artists.map(a => a.name).join(", "),
-        cover: data.item.album.images[0]?.url ? `bg-[url('${data.item.album.images[0].url}')] bg-cover bg-center` : 'bg-gray-800',
-        imageUrl: data.item.album.images[0]?.url,
+        id: track.id,
+        name: track.name,
+        artist: track.artists.map(a => a.name).join(", "),
+        cover: track.album.images[0]?.url
+          ? `bg-[url('${track.album.images[0].url}')] bg-cover bg-center`
+          : 'bg-gray-800',
+        imageUrl: track.album.images[0]?.url,
         features: {
-          valence: features.valence || 0.5,
-          energy: features.energy || 0.5,
-          tempo: features.tempo || 100
+          valence: features.valence,
+          energy: features.energy,
+          tempo: features.tempo
         }
       };
 
+      console.log('[NEW SONG]', newSong);
+
       setCurrentSong(newSong);
       updateSessionData(newSong);
-      
+
     } catch (error) {
-      console.error("Error fetching Spotify data:", error);
-      if (error.message && error.message.includes("401")) logout();
+      console.error('[SPOTIFY FETCH ERROR]', error);
+      if (error.message === "TOKEN_EXPIRED") {
+        logout();
+      }
+      // 其他錯誤就暫時不更新畫面
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   };
 
   const calculateEmotion = (features) => {
@@ -410,7 +449,7 @@ export default function AcousticBiomarkerApp() {
                    href={LOGIN_URL}
                    target="_blank" 
                    rel="noopener noreferrer"
-                   className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-full transition-all active:scale-95 bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold mt-2"
+                   className="w-full flex items-center justify中心 gap-2 px-4 py-2 rounded-full transition-all active:scale-95 bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold mt-2"
                 >
                   <LogIn size={18} /> Login with Spotify
                 </a>
@@ -448,9 +487,21 @@ export default function AcousticBiomarkerApp() {
               <h3 className="text-white font-bold truncate">{currentSong.name}</h3>
               <p className="text-gray-400 text-sm truncate">{currentSong.artist}</p>
               <div className="flex items-center space-x-2 mt-1 text-xs text-gray-500">
-                <span title="Valence">V: {currentSong.features?.valence?.toFixed(2) || '0.50'}</span>
-                <span title="Energy">E: {currentSong.features?.energy?.toFixed(2) || '0.50'}</span>
-                <span title="Tempo">BPM: {currentSong.features?.tempo?.toFixed(0) || '0'}</span>
+                <span title="Valence">
+                  V: {typeof currentSong.features?.valence === 'number'
+                        ? currentSong.features.valence.toFixed(2)
+                        : '—'}
+                </span>
+                <span title="Energy">
+                  E: {typeof currentSong.features?.energy === 'number'
+                        ? currentSong.features.energy.toFixed(2)
+                        : '—'}
+                </span>
+                <span title="Tempo">
+                  BPM: {typeof currentSong.features?.tempo === 'number'
+                          ? currentSong.features.tempo.toFixed(0)
+                          : '—'}
+                </span>
               </div>
             </div>
             <div className="flex items-center space-x-2">
@@ -513,7 +564,7 @@ export default function AcousticBiomarkerApp() {
                 <Brain className="text-blue-400 w-6 h-6" />
               </div>
               <div>
-                <h3 className="text-xl font-bold text-white">Check-in</h3>
+                <h3 className="text-xl font-bold text白">Check-in</h3>
                 <p className="text-gray-400 text-sm mt-1">
                   AI detected a shift ({currentEmotionState.label}). How are you feeling right now?
                 </p>
@@ -612,7 +663,7 @@ export default function AcousticBiomarkerApp() {
   );
 
   return (
-    <div className="min-h-screen bg-black text-white font-sans selection:bg-green-500 selection:text-black pb-20 sm:pb-0">
+    <div className="min-h-screen bg黑 text白 font-sans selection:bg-green-500 selection:text-black pb-20 sm:pb-0">
       <div className="sticky top-0 z-40 bg-black/80 backdrop-blur-md border-b border-gray-800 p-4 flex justify-between items-center">
         <div className="flex items-center gap-2">
           <Brain className="text-green-500 w-6 h-6" />
@@ -620,6 +671,7 @@ export default function AcousticBiomarkerApp() {
         </div>
         <div className="flex gap-2 items-center">
            {isRealMode && <span className="text-[10px] text-green-500 border border-green-500 px-2 rounded-full">ONLINE</span>}
+           {isLoading && <span className="text-[10px] text-gray-400">Syncing...</span>}
         </div>
       </div>
 
