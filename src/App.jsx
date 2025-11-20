@@ -10,10 +10,12 @@ import {
 // --- 設定區域 ---
 
 const CLIENT_ID = 'ae9cd0d87e4a4564936fbb84b3f937c1';
+// 自動抓取當前網址 (Vercel 網址)
 const REDIRECT_URI = window.location.origin.replace(/\/$/, ""); 
 
 const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
 const RESPONSE_TYPE = "token";
+// 確保權限正確 (user-read-private)
 const SCOPES = "user-read-currently-playing user-read-playback-state user-read-recently-played user-read-email user-read-private";
 const LOGIN_URL = `${AUTH_ENDPOINT}?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=${RESPONSE_TYPE}&scope=${encodeURIComponent(SCOPES)}`;
 
@@ -76,6 +78,7 @@ const Button = ({ onClick, children, variant = "primary", className = "", disabl
 
 export default function AcousticBiomarkerApp() {
   const [token, setToken] = useState("");
+  const [manualToken, setManualToken] = useState("");
   const [activeTab, setActiveTab] = useState('dashboard');
   const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [debugMsg, setDebugMsg] = useState("Initializing...");
@@ -83,6 +86,9 @@ export default function AcousticBiomarkerApp() {
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [anomalyDetected, setAnomalyDetected] = useState(false);
+  
+  // FIX: 預設改為 'auto'，適合 Real Domain 部署
+  const [connMethod, setConnMethod] = useState('auto'); 
   
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSong, setCurrentSong] = useState(MOCK_SONG_DATABASE[0]);
@@ -168,12 +174,9 @@ export default function AcousticBiomarkerApp() {
 
       const trackId = data.item.id;
       
-      // FIX: 檢查是否是同一首歌，且是否仍是預設數據
       const isSameSong = currentSong.id === trackId;
       const isDefaultFeatures = currentSong.features.valence === 0.5 && currentSong.features.energy === 0.5;
 
-      // 如果是同一首歌，且數據已經抓到了，就跳過 (節省資源)
-      // 如果是同一首歌，但數據還是預設值 (0.5)，就強迫重抓！
       if (isSameSong && !isDefaultFeatures) {
          return;
       }
@@ -207,7 +210,6 @@ export default function AcousticBiomarkerApp() {
         cover: data.item.album.images[0]?.url ? `bg-[url('${data.item.album.images[0].url}')] bg-cover bg-center` : 'bg-gray-800',
         imageUrl: data.item.album.images[0]?.url,
         features: {
-          // 這裡保留 || 0.5 作為最後防線
           valence: features.valence ?? 0.5,
           energy: features.energy ?? 0.5,
           tempo: features.tempo ?? 120
@@ -271,11 +273,9 @@ export default function AcousticBiomarkerApp() {
 
   useEffect(() => {
     if (connectionStatus !== 'disconnected') {
-      // Polling every 5s
       timerRef.current = setInterval(fetchSpotifyData, 5000);
-      fetchSpotifyData(); // Initial fetch
+      fetchSpotifyData(); 
     } else if (isPlaying && connectionStatus === 'disconnected') {
-      // Sim mode
       timerRef.current = setInterval(() => {
         const randomIdx = Math.floor(Math.random() * MOCK_SONG_DATABASE.length);
         const s = MOCK_SONG_DATABASE[randomIdx];
@@ -307,6 +307,15 @@ export default function AcousticBiomarkerApp() {
     setActiveTab('journal');
   };
 
+  const handleManualTokenSubmit = () => {
+    if (manualToken.length > 10) {
+        setToken(manualToken);
+        window.localStorage.setItem("spotify_token", manualToken);
+    } else {
+        alert("Please enter a valid token");
+    }
+  };
+  
   const handleInputClick = () => {
     if (redirectInputRef.current) {
       redirectInputRef.current.select();
@@ -360,30 +369,65 @@ export default function AcousticBiomarkerApp() {
         </Card>
       </div>
 
-      {/* 播放器區塊：根據狀態顯示不同內容 */}
+      {/* 播放器區塊 */}
       {connectionStatus === 'disconnected' ? (
          <Card className="flex flex-col items-center justify-center p-6 space-y-4 border-green-500/30 border-dashed">
            <h3 className="text-lg font-bold text-white">Connect to Reality</h3>
            
-           <div className="w-full bg-gray-800 p-3 rounded-lg border border-gray-600 space-y-2 text-xs text-gray-300">
-              <div className="flex items-center gap-2 font-bold text-white">
-                 <Radio size={14}/> Step 1: Check Redirect URI
-              </div>
-              <p>Ensure this URL is added to your Spotify Dashboard:</p>
-              <div className="flex items-center gap-2 bg-black/30 p-2 rounded border border-gray-600">
-                   <input ref={redirectInputRef} type="text" readOnly value={REDIRECT_URI} onClick={handleInputClick} className="bg-transparent text-green-400 flex-1 outline-none font-mono"/>
-                   <span className="text-gray-500 cursor-pointer" onClick={handleInputClick}>{copied ? "Copied" : "Copy"}</span>
-              </div>
+           <div className="flex gap-2 mb-2 bg-gray-800 p-1 rounded-lg">
+              <button onClick={() => setConnMethod('auto')} className={`px-3 py-1 text-xs rounded-md ${connMethod === 'auto' ? 'bg-green-600 text-white' : 'text-gray-400'}`}>Auto (App)</button>
+              <button onClick={() => setConnMethod('manual')} className={`px-3 py-1 text-xs rounded-md ${connMethod === 'manual' ? 'bg-gray-600 text-white' : 'text-gray-400'}`}>Manual</button>
+              <button onClick={() => setConnMethod('sim')} className={`px-3 py-1 text-xs rounded-md ${connMethod === 'sim' ? 'bg-blue-600 text-white' : 'text-gray-400'}`}>Sim</button>
            </div>
 
-           <a href={LOGIN_URL} className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-full transition-all active:scale-95 bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold mt-2">
-              <LogIn size={18} /> Login with Spotify
-           </a>
-           
-           <div className="text-xs text-gray-500 mt-2">- OR -</div>
-           <Button variant="secondary" onClick={() => {setIsPlaying(!isPlaying); setDebugMsg("Running Simulation Mode");}} className="w-full text-xs">
-             {isPlaying ? "Stop Simulation" : "Start Simulation Mode"}
-           </Button>
+           {connMethod === 'manual' && (
+             <div className="w-full bg-gray-800 p-4 rounded-lg border border-gray-600 space-y-3 animate-in fade-in">
+                <div className="flex items-center gap-2 border-b border-gray-700 pb-2">
+                   <Key size={16} className="text-yellow-400"/>
+                   <span className="text-sm font-bold text-white">Manual Token</span>
+                </div>
+                <div className="flex gap-2 mt-2">
+                   <input 
+                      type="text" 
+                      placeholder="Paste OAuth Token here..." 
+                      value={manualToken}
+                      onChange={(e) => setManualToken(e.target.value)}
+                      className="flex-1 bg-black border border-gray-600 rounded px-2 py-2 text-xs text-white focus:ring-2 focus:ring-green-500 outline-none"
+                   />
+                   <Button variant="primary" onClick={handleManualTokenSubmit} className="text-xs whitespace-nowrap">Connect</Button>
+                </div>
+             </div>
+           )}
+
+           {connMethod === 'auto' && (
+             <div className="w-full bg-gray-800 p-4 rounded-lg border border-gray-600 space-y-3 animate-in fade-in">
+                <div className="flex items-center gap-2 border-b border-gray-700 pb-2">
+                   <Zap size={16} className="text-green-400"/>
+                   <span className="text-sm font-bold text-white">Standard Auto-Login</span>
+                </div>
+                <p className="text-[10px] text-gray-400">Redirect URI for Spotify Dashboard:</p>
+                <div className="flex items-center gap-2 bg-black/30 p-2 rounded border border-gray-600">
+                   <input ref={redirectInputRef} type="text" readOnly value={REDIRECT_URI} onClick={handleInputClick} className="bg-transparent text-xs text-green-400 flex-1 outline-none font-mono"/>
+                   <span className="text-[10px] text-gray-500 cursor-pointer" onClick={handleInputClick}>{copied ? "Copied" : "Copy URI"}</span>
+                </div>
+                
+                {/* FIX: 移除了 target="_blank" 以防止彈出新視窗 */}
+                <a 
+                   href={LOGIN_URL}
+                   className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-full transition-all active:scale-95 bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold mt-2"
+                >
+                  <LogIn size={18} /> Login with Spotify
+                </a>
+             </div>
+           )}
+
+           {connMethod === 'sim' && (
+             <div className="w-full text-center animate-in fade-in">
+                <Button variant="secondary" onClick={() => {setIsPlaying(!isPlaying); setDebugMsg("Running Simulation Mode");}} className="w-full text-xs">
+                  {isPlaying ? "Stop Simulation" : "Start Simulation Mode"}
+                </Button>
+             </div>
+           )}
          </Card>
       ) : (
         <Card className="relative overflow-hidden group min-h-[120px] flex items-center justify-center">
@@ -395,7 +439,6 @@ export default function AcousticBiomarkerApp() {
              </div>
           ) : (
              <>
-               {/* Active Playing State */}
                <div className={`absolute inset-0 opacity-20 ${currentSong.cover} transition-all duration-1000`}></div>
                {currentSong.imageUrl && <div className="absolute inset-0 opacity-20 bg-cover bg-center blur-md" style={{backgroundImage: `url(${currentSong.imageUrl})`}}></div>}
                
@@ -412,7 +455,6 @@ export default function AcousticBiomarkerApp() {
                    <h3 className="text-white font-bold truncate">{currentSong.name}</h3>
                    <p className="text-gray-400 text-sm truncate">{currentSong.artist}</p>
                    <div className="flex items-center space-x-2 mt-1 text-xs text-gray-500">
-                     {/* 如果還是預設值，顯示 Refreshing... 讓使用者知道還在抓 */}
                      {currentSong.features?.valence === 0.5 && currentSong.features?.energy === 0.5 ? (
                         <span className="flex items-center gap-1 text-yellow-400 animate-pulse"><RefreshCw size={10}/> Analysing...</span>
                      ) : (
