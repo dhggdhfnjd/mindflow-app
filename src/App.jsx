@@ -4,26 +4,26 @@ import {
 } from 'recharts';
 import { 
   Activity, Music, Brain, AlertCircle, BookOpen, Settings, Play, Pause, SkipForward, Heart, 
-  Smartphone, BarChart2, User, ShieldCheck, LogIn, Wifi, Copy, ExternalLink, HelpCircle, X, CheckCircle, Monitor, Key, Zap, AlertTriangle, Radio, RefreshCw
+  Smartphone, BarChart2, User, ShieldCheck, LogIn, Wifi, Copy, ExternalLink, HelpCircle, X, CheckCircle, Monitor, Key, Zap, AlertTriangle
 } from 'lucide-react';
 
 // --- 設定區域 ---
 
 const CLIENT_ID = 'ae9cd0d87e4a4564936fbb84b3f937c1';
-// 自動抓取當前網址 (Vercel 網址)
 const REDIRECT_URI = window.location.origin.replace(/\/$/, ""); 
 
 const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
 const RESPONSE_TYPE = "token";
-// 確保權限正確 (user-read-private)
 const SCOPES = "user-read-currently-playing user-read-playback-state user-read-recently-played user-read-email user-read-private";
-const LOGIN_URL = `${AUTH_ENDPOINT}?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=${RESPONSE_TYPE}&scope=${encodeURIComponent(SCOPES)}`;
+const LOGIN_URL = `${AUTH_ENDPOINT}?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=${RESPONSE_TYPE}&scope=${encodeURIComponent(SCOPES)}&show_dialog=true`;
 
 // --- 模擬數據 ---
 const MOCK_SONG_DATABASE = [
   { id: 1, name: "Rainy Day Jazz", artist: "Relaxing Vibes", cover: "bg-blue-900", features: { valence: 0.2, energy: 0.3, tempo: 70 } },
   { id: 2, name: "High Intensity Workout", artist: "Gym Heroes", cover: "bg-red-600", features: { valence: 0.8, energy: 0.9, tempo: 140 } },
   { id: 3, name: "Melancholy Strings", artist: "Orchestra Z", cover: "bg-gray-700", features: { valence: 0.1, energy: 0.2, tempo: 60 } },
+  { id: 4, name: "Happy Pop Hits", artist: "Pop Star", cover: "bg-pink-500", features: { valence: 0.9, energy: 0.8, tempo: 120 } },
+  { id: 6, name: "Anxious Glitch", artist: "Noise Maker", cover: "bg-green-900", features: { valence: 0.3, energy: 0.8, tempo: 160 } },
 ];
 
 // AI 模型參數
@@ -80,16 +80,13 @@ export default function AcousticBiomarkerApp() {
   const [token, setToken] = useState("");
   const [manualToken, setManualToken] = useState("");
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [connectionStatus, setConnectionStatus] = useState('disconnected');
-  const [debugMsg, setDebugMsg] = useState("Initializing...");
-  
+  const [isRealMode, setIsRealMode] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [connMethod, setConnMethod] = useState('manual'); // Default to manual in this env
   const [anomalyDetected, setAnomalyDetected] = useState(false);
   
-  // FIX: 預設改為 'auto'，適合 Real Domain 部署
-  const [connMethod, setConnMethod] = useState('auto'); 
-  
+  // 播放與歌曲狀態
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSong, setCurrentSong] = useState(MOCK_SONG_DATABASE[0]);
   
@@ -98,6 +95,7 @@ export default function AcousticBiomarkerApp() {
   const [sessionData, setSessionData] = useState([]); 
   const [currentEmotionState, setCurrentEmotionState] = useState({ label: "Neutral", score: 0 });
   
+  // 日誌系統
   const [journalEntries, setJournalEntries] = useState([]);
   const [showJournalPrompt, setShowJournalPrompt] = useState(false);
   const [journalInput, setJournalInput] = useState("");
@@ -110,76 +108,66 @@ export default function AcousticBiomarkerApp() {
     const hash = window.location.hash;
     let tokenFromStorage = window.localStorage.getItem("spotify_token");
 
-    if (hash) {
+    if (!tokenFromStorage && hash) {
       const tokenPart = hash.substring(1).split("&").find(elem => elem.startsWith("access_token"));
       if (tokenPart) {
         tokenFromStorage = tokenPart.split("=")[1];
         window.location.hash = "";
         window.localStorage.setItem("spotify_token", tokenFromStorage);
-        setDebugMsg("Token extracted from URL hash.");
       }
     }
 
     if (tokenFromStorage) {
       setToken(tokenFromStorage);
-      setConnectionStatus('idle');
-      setDebugMsg("Token loaded.");
-    } else {
-      setDebugMsg("No token found.");
+      setIsRealMode(true);
     }
   }, []);
 
   const logout = () => {
     setToken("");
+    setManualToken("");
     window.localStorage.removeItem("spotify_token");
-    setConnectionStatus('disconnected');
+    setIsRealMode(false);
     setSessionData([]);
-    setDebugMsg("Logged out.");
   };
 
   // --- 核心邏輯：獲取真實數據 ---
   const fetchSpotifyData = async () => {
     if (!token) return;
-    
+    setIsLoading(true);
+
     try {
       const response = await fetch("https://api.spotify.com/v1/me/player/currently-playing", {
         headers: { Authorization: `Bearer ${token}` }
       });
 
       if (response.status === 401) {
-        setDebugMsg("Token Expired (401)");
+        // Token 過期
+        console.error("Token expired");
         logout();
         return;
       }
 
-      if (response.status === 204) {
-        setConnectionStatus('idle');
-        setDebugMsg("Spotify Connected (No Music)");
+      if (response.status === 204 || response.status > 400) {
+        setIsLoading(false);
         return; 
       }
 
       const data = await response.json();
       if (!data || !data.item) {
-        setConnectionStatus('idle');
+        setIsLoading(false);
         return;
       }
 
-      setConnectionStatus('active');
-      setDebugMsg(`Playing: ${data.item.name}`);
-
+      // 檢查是否為音樂軌道
       if (data.item.type !== 'track') {
-         setDebugMsg("Podcast/Ad Detected (No Features)");
+         console.log("Not a track (podcast/ad), skipping features");
+         setIsLoading(false);
          return;
       }
 
       const trackId = data.item.id;
       
-      const isSameSong = currentSong.id === trackId;
-      const isDefaultFeatures = currentSong.features.valence === 0.5 && currentSong.features.energy === 0.5;
-
-      if (isSameSong && !isDefaultFeatures) {
-         return;
-      }
 
       let features = { valence: 0.5, energy: 0.5, tempo: 120 };
       try {
@@ -191,16 +179,10 @@ export default function AcousticBiomarkerApp() {
             const featuresData = await featuresResponse.json();
             if (featuresData) {
                 features = featuresData;
-                setDebugMsg("Features Loaded!");
-            } else {
-                setDebugMsg("Features API returned null");
             }
-        } else {
-            setDebugMsg(`Features Error: ${featuresResponse.status}`);
         }
       } catch (e) {
         console.warn("Failed to load audio features", e);
-        setDebugMsg("Features Network Error");
       }
 
       const newSong = {
@@ -210,9 +192,9 @@ export default function AcousticBiomarkerApp() {
         cover: data.item.album.images[0]?.url ? `bg-[url('${data.item.album.images[0].url}')] bg-cover bg-center` : 'bg-gray-800',
         imageUrl: data.item.album.images[0]?.url,
         features: {
-          valence: features.valence ?? 0.5,
-          energy: features.energy ?? 0.5,
-          tempo: features.tempo ?? 120
+          valence: features.valence || 0.5,
+          energy: features.energy || 0.5,
+          tempo: features.tempo || 100
         }
       };
 
@@ -221,8 +203,9 @@ export default function AcousticBiomarkerApp() {
       
     } catch (error) {
       console.error("Error fetching Spotify data:", error);
-      setDebugMsg(`Error: ${error.message}`);
+      if (error.message && error.message.includes("401")) logout();
     }
+    setIsLoading(false);
   };
 
   const calculateEmotion = (features) => {
@@ -250,6 +233,7 @@ export default function AcousticBiomarkerApp() {
 
   useEffect(() => {
     if (sessionData.length === 0) return;
+
     const lastSession = sessionData[sessionData.length - 1];
     const emotion = calculateEmotion(lastSession.features);
     setCurrentEmotionState(emotion);
@@ -266,16 +250,19 @@ export default function AcousticBiomarkerApp() {
 
     if (dist > AI_CONFIG.anomalyThreshold) {
       setAnomalyDetected(true);
+      if (!showJournalPrompt && activeTab !== 'journal') {
+        // Real App: Send Push Notification
+      }
     } else {
       setAnomalyDetected(false);
     }
   }, [sessionData]);
 
   useEffect(() => {
-    if (connectionStatus !== 'disconnected') {
+    if (isRealMode) {
       timerRef.current = setInterval(fetchSpotifyData, 5000);
-      fetchSpotifyData(); 
-    } else if (isPlaying && connectionStatus === 'disconnected') {
+      fetchSpotifyData();
+    } else if (isPlaying) {
       timerRef.current = setInterval(() => {
         const randomIdx = Math.floor(Math.random() * MOCK_SONG_DATABASE.length);
         const s = MOCK_SONG_DATABASE[randomIdx];
@@ -286,7 +273,7 @@ export default function AcousticBiomarkerApp() {
       clearInterval(timerRef.current);
     }
     return () => clearInterval(timerRef.current);
-  }, [isPlaying, connectionStatus, token]);
+  }, [isPlaying, isRealMode, token]);
 
   const handleJournalSubmit = (e) => {
     e.preventDefault();
@@ -311,6 +298,7 @@ export default function AcousticBiomarkerApp() {
     if (manualToken.length > 10) {
         setToken(manualToken);
         window.localStorage.setItem("spotify_token", manualToken);
+        setIsRealMode(true);
     } else {
         alert("Please enter a valid token");
     }
@@ -327,25 +315,9 @@ export default function AcousticBiomarkerApp() {
 
   const renderDashboard = () => (
     <div className="space-y-6 animate-in fade-in duration-500">
-      {/* 連線狀態指示器 */}
-      <div className="bg-gray-900 border border-gray-700 rounded-lg p-3 flex justify-between items-center">
-         <div className="flex items-center gap-2">
-            <div className={`w-3 h-3 rounded-full ${connectionStatus === 'active' ? 'bg-green-500 animate-pulse' : connectionStatus === 'idle' ? 'bg-yellow-500' : 'bg-gray-500'}`}></div>
-            <div className="flex flex-col">
-               <span className="text-xs font-bold text-white uppercase">
-                  {connectionStatus === 'active' ? 'Monitoring Active' : connectionStatus === 'idle' ? 'Spotify Connected (Idle)' : 'Disconnected'}
-               </span>
-               <span className="text-[10px] text-gray-400 font-mono truncate max-w-[200px]">{debugMsg}</span>
-            </div>
-         </div>
-         {connectionStatus !== 'disconnected' && (
-             <button onClick={logout} className="text-xs text-red-400 hover:text-red-300 border border-red-900 px-2 py-1 rounded">Logout</button>
-         )}
-      </div>
-
       <div className="grid grid-cols-2 gap-4">
         <Card className="flex flex-col items-center justify-center p-6 bg-gradient-to-br from-gray-800 to-gray-900 relative overflow-hidden">
-           {connectionStatus === 'active' && <div className="absolute top-2 right-2"><Wifi size={12} className="text-green-500 animate-pulse"/></div>}
+           {isRealMode && <div className="absolute top-2 right-2"><Wifi size={12} className="text-green-500 animate-pulse"/></div>}
           <span className="text-gray-400 text-xs uppercase tracking-wider mb-2">Current Mood</span>
           <div className={`text-xl font-bold ${currentEmotionState.color}`}>{currentEmotionState.label}</div>
           <div className="text-xs text-gray-500 mt-1">AI Inference (Layer A)</div>
@@ -357,7 +329,12 @@ export default function AcousticBiomarkerApp() {
             <>
               <AlertCircle className="w-8 h-8 text-red-500 mb-2 animate-pulse" />
               <span className="text-red-400 font-bold text-sm text-center">Shift Detected</span>
-              <button onClick={() => setShowJournalPrompt(true)} className="mt-2 text-xs bg-red-600 text-white px-3 py-1 rounded-full hover:bg-red-500">Log Emotion</button>
+              <button 
+                onClick={() => setShowJournalPrompt(true)}
+                className="mt-2 text-xs bg-red-600 text-white px-3 py-1 rounded-full hover:bg-red-500"
+              >
+                Log Emotion
+              </button>
             </>
           ) : (
             <>
@@ -369,15 +346,15 @@ export default function AcousticBiomarkerApp() {
         </Card>
       </div>
 
-      {/* 播放器區塊 */}
-      {connectionStatus === 'disconnected' ? (
+      {!isRealMode ? (
          <Card className="flex flex-col items-center justify-center p-6 space-y-4 border-green-500/30 border-dashed">
            <h3 className="text-lg font-bold text-white">Connect to Reality</h3>
            
+           {/* 選項切換 */}
            <div className="flex gap-2 mb-2 bg-gray-800 p-1 rounded-lg">
-              <button onClick={() => setConnMethod('auto')} className={`px-3 py-1 text-xs rounded-md ${connMethod === 'auto' ? 'bg-green-600 text-white' : 'text-gray-400'}`}>Auto (App)</button>
-              <button onClick={() => setConnMethod('manual')} className={`px-3 py-1 text-xs rounded-md ${connMethod === 'manual' ? 'bg-gray-600 text-white' : 'text-gray-400'}`}>Manual</button>
-              <button onClick={() => setConnMethod('sim')} className={`px-3 py-1 text-xs rounded-md ${connMethod === 'sim' ? 'bg-blue-600 text-white' : 'text-gray-400'}`}>Sim</button>
+              <button onClick={() => setConnMethod('manual')} className={`px-3 py-1 text-xs rounded-md ${connMethod === 'manual' ? 'bg-green-600 text-white' : 'text-gray-400'}`}>Manual (Best for Preview)</button>
+              <button onClick={() => setConnMethod('auto')} className={`px-3 py-1 text-xs rounded-md ${connMethod === 'auto' ? 'bg-gray-600 text-white' : 'text-gray-400'}`}>Auto (For App/Web)</button>
+              <button onClick={() => setConnMethod('sim')} className={`px-3 py-1 text-xs rounded-md ${connMethod === 'sim' ? 'bg-blue-600 text-white' : 'text-gray-400'}`}>Simulation</button>
            </div>
 
            {connMethod === 'manual' && (
@@ -386,6 +363,18 @@ export default function AcousticBiomarkerApp() {
                    <Key size={16} className="text-yellow-400"/>
                    <span className="text-sm font-bold text-white">Manual Token</span>
                 </div>
+                
+                {/* 警語：解釋為什麼要用手動模式 */}
+                <div className="bg-yellow-900/30 border border-yellow-800 p-2 rounded text-[10px] text-yellow-200 flex gap-2">
+                    <AlertTriangle size={14} className="shrink-0 mt-0.5"/>
+                    <span>Redirects (Auto Login) usually cause 404 errors in this preview window. Use this manual method to test instantly.</span>
+                </div>
+
+                <ol className="list-decimal list-inside text-[10px] text-gray-300 space-y-1">
+                  <li>Open <a href="https://developer.spotify.com/documentation/web-api/reference/get-the-users-currently-playing-track" target="_blank" rel="noreferrer" className="text-blue-400 underline">Spotify API Reference</a></li>
+                  <li>Find <strong>"Try it"</strong> (right side) & Click <strong>"Get Token"</strong>.</li>
+                  <li>Copy the <strong>"Access Token"</strong> string.</li>
+                </ol>
                 <div className="flex gap-2 mt-2">
                    <input 
                       type="text" 
@@ -400,20 +389,27 @@ export default function AcousticBiomarkerApp() {
            )}
 
            {connMethod === 'auto' && (
-             <div className="w-full bg-gray-800 p-4 rounded-lg border border-gray-600 space-y-3 animate-in fade-in">
+             <div className="w-full bg-gray-800 p-4 rounded-lg border border-gray-600 space-y-3 animate-in fade-in opacity-70">
                 <div className="flex items-center gap-2 border-b border-gray-700 pb-2">
                    <Zap size={16} className="text-green-400"/>
                    <span className="text-sm font-bold text-white">Standard Auto-Login</span>
                 </div>
-                <p className="text-[10px] text-gray-400">Redirect URI for Spotify Dashboard:</p>
+                
+                {/* 警告 */}
+                <div className="bg-red-900/30 border border-red-800 p-2 rounded text-[10px] text-red-200 flex gap-2">
+                    <X size={14} className="shrink-0 mt-0.5"/>
+                    <span>This option will likely FAIL with "404" in this preview window. Only use if deploying to a real domain.</span>
+                </div>
+
                 <div className="flex items-center gap-2 bg-black/30 p-2 rounded border border-gray-600">
                    <input ref={redirectInputRef} type="text" readOnly value={REDIRECT_URI} onClick={handleInputClick} className="bg-transparent text-xs text-green-400 flex-1 outline-none font-mono"/>
                    <span className="text-[10px] text-gray-500 cursor-pointer" onClick={handleInputClick}>{copied ? "Copied" : "Copy URI"}</span>
                 </div>
                 
-                {/* FIX: 移除了 target="_blank" 以防止彈出新視窗 */}
                 <a 
                    href={LOGIN_URL}
+                   target="_blank" 
+                   rel="noopener noreferrer"
                    className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-full transition-all active:scale-95 bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold mt-2"
                 >
                   <LogIn size={18} /> Login with Spotify
@@ -423,58 +419,51 @@ export default function AcousticBiomarkerApp() {
 
            {connMethod === 'sim' && (
              <div className="w-full text-center animate-in fade-in">
-                <Button variant="secondary" onClick={() => {setIsPlaying(!isPlaying); setDebugMsg("Running Simulation Mode");}} className="w-full text-xs">
-                  {isPlaying ? "Stop Simulation" : "Start Simulation Mode"}
+                <p className="text-xs text-gray-400 mb-2">Use Simulation Mode (No Spotify required)</p>
+                <Button variant="secondary" onClick={() => setIsPlaying(!isPlaying)} className="w-full">
+                   {isPlaying ? "Stop Simulation" : "Start Simulation"}
                 </Button>
              </div>
            )}
+
          </Card>
       ) : (
-        <Card className="relative overflow-hidden group min-h-[120px] flex items-center justify-center">
-          {connectionStatus === 'idle' ? (
-             <div className="text-center p-4 z-10">
-                <Music className="w-8 h-8 text-gray-500 mx-auto mb-2" />
-                <h3 className="text-white font-bold">Waiting for Music...</h3>
-                <p className="text-xs text-gray-400">Please open Spotify and play a song to start tracking.</p>
-             </div>
+        <Card className="relative overflow-hidden group">
+          {currentSong.imageUrl ? (
+             <div className="absolute inset-0 opacity-20 bg-cover bg-center blur-md transition-all duration-1000" style={{backgroundImage: `url(${currentSong.imageUrl})`}}></div>
           ) : (
-             <>
-               <div className={`absolute inset-0 opacity-20 ${currentSong.cover} transition-all duration-1000`}></div>
-               {currentSong.imageUrl && <div className="absolute inset-0 opacity-20 bg-cover bg-center blur-md" style={{backgroundImage: `url(${currentSong.imageUrl})`}}></div>}
-               
-               <div className="relative z-10 flex items-center space-x-4 w-full">
-                 {currentSong.imageUrl ? (
-                   <img src={currentSong.imageUrl} alt="Cover" className="w-16 h-16 rounded-lg shadow-lg" />
-                 ) : (
-                   <div className={`w-16 h-16 rounded-lg shadow-lg ${currentSong.cover} flex items-center justify-center`}>
-                     <Music className="text-white/70" />
-                   </div>
-                 )}
-                 
-                 <div className="flex-1 min-w-0">
-                   <h3 className="text-white font-bold truncate">{currentSong.name}</h3>
-                   <p className="text-gray-400 text-sm truncate">{currentSong.artist}</p>
-                   <div className="flex items-center space-x-2 mt-1 text-xs text-gray-500">
-                     {currentSong.features?.valence === 0.5 && currentSong.features?.energy === 0.5 ? (
-                        <span className="flex items-center gap-1 text-yellow-400 animate-pulse"><RefreshCw size={10}/> Analysing...</span>
-                     ) : (
-                        <>
-                           <span title="Valence">V: {currentSong.features?.valence?.toFixed(2)}</span>
-                           <span title="Energy">E: {currentSong.features?.energy?.toFixed(2)}</span>
-                        </>
-                     )}
-                   </div>
-                 </div>
-                 <div className="flex flex-col items-end">
-                    <span className="text-[10px] text-green-400 font-mono uppercase">Live</span>
-                    <div className="flex gap-1 mt-1">
-                      <span className="w-1 h-4 bg-green-500 animate-pulse delay-75 rounded-full"></span>
-                      <span className="w-1 h-6 bg-green-500 animate-pulse delay-150 rounded-full"></span>
-                    </div>
+             <div className={`absolute inset-0 opacity-20 ${currentSong.cover} transition-colors duration-1000`}></div>
+          )}
+          
+          <div className="relative z-10 flex items-center space-x-4">
+            {currentSong.imageUrl ? (
+              <img src={currentSong.imageUrl} alt="Cover" className="w-16 h-16 rounded-lg shadow-lg" />
+            ) : (
+              <div className={`w-16 h-16 rounded-lg shadow-lg ${currentSong.cover} flex items-center justify-center`}>
+                <Music className="text-white/70" />
+              </div>
+            )}
+            
+            <div className="flex-1 min-w-0">
+              <h3 className="text-white font-bold truncate">{currentSong.name}</h3>
+              <p className="text-gray-400 text-sm truncate">{currentSong.artist}</p>
+              <div className="flex items-center space-x-2 mt-1 text-xs text-gray-500">
+                <span title="Valence">V: {currentSong.features?.valence?.toFixed(2) || '0.50'}</span>
+                <span title="Energy">E: {currentSong.features?.energy?.toFixed(2) || '0.50'}</span>
+                <span title="Tempo">BPM: {currentSong.features?.tempo?.toFixed(0) || '0'}</span>
+              </div>
+            </div>
+            <div className="flex items-center space-x-2">
+               <div className="flex flex-col items-end">
+                 <span className="text-[10px] text-green-400 font-mono uppercase">Live Sync</span>
+                 <div className="flex gap-1 mt-1">
+                   <span className="w-1 h-4 bg-green-500 animate-pulse delay-75 rounded-full"></span>
+                   <span className="w-1 h-6 bg-green-500 animate-pulse delay-150 rounded-full"></span>
+                   <span className="w-1 h-3 bg-green-500 animate-pulse delay-300 rounded-full"></span>
                  </div>
                </div>
-             </>
-          )}
+            </div>
+          </div>
         </Card>
       )}
 
@@ -484,6 +473,7 @@ export default function AcousticBiomarkerApp() {
             <Activity size={16} />
             Emotional Trajectory (Layer B)
           </h3>
+          {isRealMode && <Badge variant="success">Real-time</Badge>}
         </div>
         <div className="flex-1 w-full min-h-0">
           <ResponsiveContainer width="100%" height="100%">
@@ -501,7 +491,15 @@ export default function AcousticBiomarkerApp() {
                 contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
                 itemStyle={{ color: '#D1D5DB' }}
               />
-              <Area type="monotone" dataKey="moodIndex" stroke="#10B981" strokeWidth={2} fillOpacity={1} fill="url(#colorMood)" isAnimationActive={false} />
+              <Area 
+                type="monotone" 
+                dataKey="moodIndex" 
+                stroke="#10B981" 
+                strokeWidth={2}
+                fillOpacity={1} 
+                fill="url(#colorMood)" 
+                isAnimationActive={false} 
+              />
             </AreaChart>
           </ResponsiveContainer>
         </div>
@@ -521,8 +519,14 @@ export default function AcousticBiomarkerApp() {
                 </p>
               </div>
             </div>
+            
             <form onSubmit={handleJournalSubmit}>
-              <textarea value={journalInput} onChange={(e) => setJournalInput(e.target.value)} placeholder="I'm feeling..." className="w-full h-32 bg-gray-800 border border-gray-700 rounded-lg p-3 text-white placeholder-gray-500 focus:ring-2 focus:ring-green-500 focus:outline-none resize-none mb-4"/>
+              <textarea 
+                value={journalInput}
+                onChange={(e) => setJournalInput(e.target.value)}
+                placeholder="I'm feeling..."
+                className="w-full h-32 bg-gray-800 border border-gray-700 rounded-lg p-3 text-white placeholder-gray-500 focus:ring-2 focus:ring-green-500 focus:outline-none resize-none mb-4"
+              />
               <div className="flex gap-3 justify-end">
                 <Button variant="outline" onClick={() => setShowJournalPrompt(false)}>Skip</Button>
                 <Button variant="primary" type="submit">Save Entry</Button>
@@ -531,6 +535,125 @@ export default function AcousticBiomarkerApp() {
           </Card>
         </div>
       )}
+    </div>
+  );
+
+  // 2. 校準頁面
+  const renderCalibration = () => (
+    <div className="space-y-6 animate-in slide-in-from-right duration-300">
+      <div className="text-center space-y-2 mb-8">
+        <h2 className="text-2xl font-bold text-white">Phase I: Calibration</h2>
+        <p className="text-gray-400 text-sm">AI Learning Status</p>
+      </div>
+
+      <Card>
+        <h3 className="text-lg font-semibold text-white mb-4">Current Baseline Profile</h3>
+        <div className="grid grid-cols-2 gap-4 mb-6">
+          <div className="bg-gray-900/50 p-4 rounded-lg text-center">
+            <div className="text-2xl font-bold text-green-400">{userBaseline.valence.toFixed(2)}</div>
+            <div className="text-xs text-gray-500">Avg Valence</div>
+          </div>
+          <div className="bg-gray-900/50 p-4 rounded-lg text-center">
+            <div className="text-2xl font-bold text-purple-400">{userBaseline.energy.toFixed(2)}</div>
+            <div className="text-xs text-gray-500">Avg Energy</div>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <div className="flex justify-between text-sm text-gray-400">
+            <span>Learning Progress</span>
+            <span>{sessionData.length > 50 ? '100%' : `${(sessionData.length / 50 * 100).toFixed(0)}%`}</span>
+          </div>
+          <div className="h-2 bg-gray-700 rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-green-500 transition-all duration-500" 
+              style={{ width: `${Math.min(100, sessionData.length / 50 * 100)}%` }}
+            ></div>
+          </div>
+        </div>
+      </Card>
+      
+      {isRealMode && (
+         <Button variant="danger" onClick={logout} className="w-full">Disconnect Spotify</Button>
+      )}
+    </div>
+  );
+
+  // 3. 日誌頁面
+  const renderJournal = () => (
+    <div className="space-y-6 animate-in slide-in-from-right duration-300">
+      <div className="flex justify-between items-center">
+        <h2 className="text-2xl font-bold text-white">Emotion Log</h2>
+        <Button variant="secondary" onClick={() => { /* Export Logic */ }}>Export</Button>
+      </div>
+
+      {journalEntries.length === 0 ? (
+        <div className="text-center py-12 text-gray-500">
+          <BookOpen size={48} className="mx-auto mb-4 opacity-20" />
+          <p>No entries yet.</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {journalEntries.map(entry => (
+            <Card key={entry.id} className="border-l-4 border-l-blue-500">
+              <div className="flex justify-between items-start mb-2">
+                <span className="text-xs text-gray-400">{entry.date}</span>
+                <Badge variant="info">{entry.detectedEmotion}</Badge>
+              </div>
+              <p className="text-gray-300 mb-3">{entry.text}</p>
+              <div className="text-xs text-gray-500 flex items-center gap-1">
+                <Music size={12} />
+                Trigger: <span className="text-gray-400">{entry.triggerSong}</span>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-black text-white font-sans selection:bg-green-500 selection:text-black pb-20 sm:pb-0">
+      <div className="sticky top-0 z-40 bg-black/80 backdrop-blur-md border-b border-gray-800 p-4 flex justify-between items-center">
+        <div className="flex items-center gap-2">
+          <Brain className="text-green-500 w-6 h-6" />
+          <h1 className="text-lg font-bold tracking-tight">MindFlow AI</h1>
+        </div>
+        <div className="flex gap-2 items-center">
+           {isRealMode && <span className="text-[10px] text-green-500 border border-green-500 px-2 rounded-full">ONLINE</span>}
+        </div>
+      </div>
+
+      <main className="max-w-md mx-auto p-4 pt-6">
+        {activeTab === 'dashboard' && renderDashboard()}
+        {activeTab === 'calibration' && renderCalibration()}
+        {activeTab === 'journal' && renderJournal()}
+      </main>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-gray-900 border-t border-gray-800 p-2 z-50 pb-safe">
+        <div className="max-w-md mx-auto flex justify-around items-center">
+          <button 
+            onClick={() => setActiveTab('dashboard')}
+            className={`flex flex-col items-center p-2 rounded-lg transition-colors ${activeTab === 'dashboard' ? 'text-green-500' : 'text-gray-500 hover:text-gray-300'}`}
+          >
+            <Activity size={24} />
+            <span className="text-[10px] mt-1">Monitor</span>
+          </button>
+          <button 
+            onClick={() => setActiveTab('calibration')}
+            className={`flex flex-col items-center p-2 rounded-lg transition-colors ${activeTab === 'calibration' ? 'text-green-500' : 'text-gray-500 hover:text-gray-300'}`}
+          >
+            <Settings size={24} />
+            <span className="text-[10px] mt-1">Settings</span>
+          </button>
+          <button 
+            onClick={() => setActiveTab('journal')}
+            className={`flex flex-col items-center p-2 rounded-lg transition-colors ${activeTab === 'journal' ? 'text-green-500' : 'text-gray-500 hover:text-gray-300'}`}
+          >
+            <BookOpen size={24} />
+            <span className="text-[10px] mt-1">Journal</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
